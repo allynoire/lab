@@ -2,27 +2,25 @@
 
 precision highp float;
 
+struct Ray {
+    vec3 position;
+    vec3 direction;
+    float step_size;
+    vec3 start;
+    vec3 end;
+};
+
 const float PI = acos(-1.);
 const vec4 COL1 = vec4(0.2, 1.0, 0.9333, 1.0);
 const vec4 COL2 = vec4(0.6627, 0.4863, 0.9922, 1.0);
 const vec4 COL3 = vec4(0.2196, 0.9725, 0.5098, 1.0);
 const vec4 COL4 = vec4(0.9059, 0.8549, 0.1333, 1.0);
 
-struct Ray {
-    vec3 position;
-    vec3 step;
-};
-
-
-
-
 uniform float u_time;
 
 in vec4 v_position;
-in vec2 v_texcoord;
 
 out vec4 frag_color;
-
 
 vec3 srandom3(in vec3 p) {
     p = vec3( dot(p, vec3(127.1, 311.7, 74.7)),
@@ -31,36 +29,34 @@ vec3 srandom3(in vec3 p) {
     return -1. + 2. * fract(sin(p) * 43758.5453123);
 }
 
-float cubeSDF( vec3 p ) {
+// returns the signed distance from position `p` to the 'normal' cube
+float cubeSDF(vec3 p) {
     vec3 d = abs(p)-vec3(1);
     return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));
 }
 
-vec3 icdf(in vec3 x) {;
-    return log(1. / x) / 1.702;
+// returns 1 if position `p` lies in the 'normal' cube, otherwise 0
+float inside_cube(vec3 p) {
+    vec3 s = 1. - step(1., abs(p));
+    return s.x * s.y * s.z;
 }
 
-vec3 gradient(vec3 c) {
-
-    return normalize(srandom3(c));
-
-    // int i = c.x + c.y * N + c.z * N * N;
-    // return vec3(noise[i], noise[i+1], noise[i+2]);
+// returns the gradient vector at position `p`
+vec3 gradient(vec3 p) {
+    return normalize(srandom3(p)); // diagonal bias, but good enough i guess
 }
 
-
+// returns the perlin noise at position `p`
 float perlin(vec3 p) {
 
     float[8] a;
 
+    int k = 0;
     for (int dz = 0; dz <= 1; ++dz) {
     for (int dy = 0; dy <= 1; ++dy) {
     for (int dx = 0; dx <= 1; ++dx) {
-        int k = dx + dy * 2 + dz * 4;
-        vec3 c = vec3(floor(p + vec3(dx, dy, dz)));
-        vec3 gradient = gradient(c);
-        vec3 offset = vec3(c) - p;
-        a[k] = dot(gradient, offset);
+        vec3 c = floor(p + vec3(dx, dy, dz));
+        a[k++] = dot(gradient(c), c - p);
     }}}
     
     p = smoothstep(0., 1., fract(p));
@@ -79,75 +75,72 @@ float perlin(vec3 p) {
     );
 }
 
-float normalcube(vec3 p) {
-    vec3 s = 1. - step(1., abs(p));
-    return s.x * s.y * s.z;
-}
-
+// returns the volume density at position `p`
 float density(vec3 p) {
-    // density function. perlin noise within normal cube. outside is 0
-    
-    return (perlin(p * 2.)) * normalcube(p);
-    return max(0., -cubeSDF(p));
+    return (perlin(p * 2.)) * inside_cube(p);
 }
 
+// returns the color for a given density 'x'
 vec4 transfer(float x) {
-    float a = 0.2;
-    float b = 0.9;
-    vec4 color;
-    if (x < a)
-        color = mix(COL1, COL2, smoothstep(0., a, x / a));
-    else if (x < b)
-        color = mix(COL2, COL3, smoothstep(a, b, (x-a) / (b-a)));
-    else
-        color = mix(COL3, COL4, smoothstep(b, 1., (x-b) / (1. - b)));
-    
-    color = mix(COL1, COL2, step(.2, x));
+    vec4 color = mix(COL1, COL2, step(.2, x));
     color.a = smoothstep(.0, 1., x);
-
-
     return color;
 }
 
-const int MAX_STEPS = 160;
+const int M = 3; // iterations for entry and exit point approximation
+const int N = 60; // number volume samples
 
 void main() {
+    // camera setup
     vec2 uv = v_position.xy;
-    vec3 camera_position = vec3(0, 0, 5);
+    vec3 camera_position = vec3(0, 0, -6);
     float focal_length = -2.;
+    
+    // model transformation
+    float a = u_time * 1.10;
+    mat3x3 T;
+    T[0] = vec3(cos(a), 0, sin(a));
+    T[1] = vec3(0, 1, 0);
+    T[2] = vec3(-sin(a), 0, cos(a));
 
-
+    // ray setup
     Ray ray;
-    ray.position = vec3(uv, 0); // point on the image
-    vec3 dir = normalize(vec3(0, 0, focal_length) - ray.position);
-    ray.step = dir * .02;
-    // ray.position += ray.step * (length(camera_position) - 1.);
-
-    float t = u_time * 1.10;
-    vec3 T = vec3(0, 0, 0);
-    mat3 R;
-    R[0] = vec3(cos(t), 0, sin(t));
-    R[1] = vec3(0, 1, 0);
-    R[2] = vec3(-sin(t), 0, cos(t));
-
-    vec3 acc;
-    for (int i = 0; i < MAX_STEPS; ++i) {
-        vec3 p = R * (ray.position + camera_position);
-        
-        // vec4 s = mix(vec4(0), vec4(1, 1, 0, .5), normalcube(R * (p + camera_position)));
-        vec4 s = transfer(density(p));
-        
-        acc = mix(acc, s.rgb, s.a);
-        //acc += s.rgb * s.a;
+    ray.position = vec3(uv, 0) + camera_position;
+    ray.direction = normalize(camera_position - vec3(0, 0, focal_length) - ray.position);
+    
+    // approximate ray entry point into boundary
+    for (int i = 0; i < M; ++i) {
+        vec3 p = T * ray.position;
         float d = cubeSDF(p);
-        if (d > 0.1)
-            ray.position += dir * d;
-        else
-            ray.position += ray.step;
+        if (d > .01)
+            ray.position += ray.direction * d;
     }
-    // acc /= acc.a; ///= float(MAX_STEPS);
-    // acc.rgb /= float(MAX_STEPS);
-    frag_color = vec4(acc, 1);
-    // frag_color = transfer(density(vec3(uv * 1.5, 0.0)));
-    // frag_color = mix(COL1, COL2, step(.2, a));
+    ray.start = ray.position;
+
+    // overshoot the boundary
+    ray.position += ray.direction * 2.;
+
+    // approximate ray exit point out of boundary
+    for (int i = 0; i < M; ++i) {
+        vec3 p = T * ray.position;
+        float d = cubeSDF(p);
+        if (d > .01)
+            ray.position -= ray.direction * d;
+    }
+    ray.end = ray.position;
+
+    // reset ray and compute step size
+    ray.position = ray.start;
+    ray.step_size = distance(ray.start, ray.end) / float(N);
+
+    // step through cube and accumulate color
+    vec3 color;
+    for (int i = 0; i < N; ++i) {
+        vec3 p = T * ray.position;
+        vec4 s = transfer(density(p)); // sample density at `p` and transfer it into a color
+        color = mix(color, s.rgb, s.a); // blend function
+        ray.position += ray.direction * ray.step_size;
+    }
+    
+    frag_color = vec4(color, 1);
 }
