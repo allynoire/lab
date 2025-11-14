@@ -1,4 +1,5 @@
 #version 300 es
+#define VOL_TORUS
 
 precision highp float;
 
@@ -30,15 +31,17 @@ vec3 srandom3(in vec3 p) {
 }
 
 // returns the signed distance from position `p` to the 'normal' cube
-float cubeSDF(vec3 p) {
-    vec3 d = abs(p)-vec3(1);
-    return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));
-}
-
-// returns 1 if position `p` lies in the 'normal' cube, otherwise 0
-float inside_cube(vec3 p) {
-    vec3 s = 1. - step(1., abs(p));
-    return s.x * s.y * s.z;
+float volumeSDF(vec3 p) {
+    #ifdef VOL_TORUS
+        p.xyz = p.xzy;
+        vec2 t = vec2(1, .5);
+        return length( vec2(length(p.xz)-t.x,p.y) )-t.y;
+    #elif defined(VOL_SPHERE)
+        return length(p) - 1.;
+    #else
+        vec3 d = abs(p)-vec3(1);
+        return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));
+    #endif
 }
 
 // returns the gradient vector at position `p`
@@ -77,7 +80,7 @@ float perlin(vec3 p) {
 
 // returns the volume density at position `p`
 float density(vec3 p) {
-    return (perlin(p * 2.)) * inside_cube(p);
+    return (perlin(p * 2.)) * step(0., -volumeSDF(p));
 }
 
 // returns the color for a given density 'x'
@@ -111,7 +114,7 @@ void main() {
     // approximate ray entry point into boundary
     for (int i = 0; i < M; ++i) {
         vec3 p = T * ray.position;
-        float d = cubeSDF(p);
+        float d = volumeSDF(p);
         if (d > .01)
             ray.position += ray.direction * d;
     }
@@ -123,7 +126,7 @@ void main() {
     // approximate ray exit point out of boundary
     for (int i = 0; i < M; ++i) {
         vec3 p = T * ray.position;
-        float d = cubeSDF(p);
+        float d = volumeSDF(p);
         if (d > .01)
             ray.position -= ray.direction * d;
     }
